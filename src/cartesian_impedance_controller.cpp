@@ -189,8 +189,8 @@ controller_interface::return_type CartesianImpedanceController::update(
 CallbackReturn CartesianImpedanceController::on_init() {
   try {
     auto_declare<std::string>("arm_id", "fr3");
-    auto_declare<std::vector<double>>("k_gains", {750.0, 750.0, 750.0, 15.0, 15.0, 15.0});
-    auto_declare<std::vector<double>>("d_gains", {37.0, 37.0, 37.0, 2.0, 2.0, 2.0});
+    auto_declare<std::vector<double>>("k_gains", {50.0, 50.0, 50.0, 5.0, 5.0, 5.0});
+    auto_declare<std::vector<double>>("d_gains", {3.0, 3.0, 3.0, 2.0, 2.0, 2.0});
     auto_declare<bool>("load_gripper", true);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception during on_init: %s", e.what());
