@@ -89,6 +89,7 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Quaterniond delta_orientation_;
   Eigen::Vector3d delta_position_;
   std::mutex delta_pose_mutex_;
+  bool new_delta_received_{false};
 
   // Joint states
   Vector7d q_;

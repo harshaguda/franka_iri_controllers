@@ -93,10 +93,7 @@ void CartesianImpedanceController::deltaPoseCallback(
   delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
                                           msg->pose.orientation.y, msg->pose.orientation.z);
 
-  // Compute new desired pose = initial + delta
-  desired_position_ = initial_position_ + delta_position_;
-  desired_orientation_ = delta_orientation_ * initial_orientation_;
-  desired_orientation_.normalize();
+  new_delta_received_ = true;
 }
 
 Eigen::Vector3d CartesianImpedanceController::computeOrientationError(
@@ -143,20 +140,44 @@ controller_interface::return_type CartesianImpedanceController::update(
   }
 
   // Get desired pose (thread-safe)
+  // Only update when new delta is received, otherwise maintain previous desired pose
   Eigen::Vector3d position_d;
   Eigen::Quaterniond orientation_d;
   {
     std::lock_guard<std::mutex> lock(delta_pose_mutex_);
+    if (new_delta_received_) {
+      Eigen::Vector3d target_position = current_position + delta_position_;
+      
+      // Clamp maximum position error to prevent large jumps
+      const double max_position_error = 0.12;  // meters
+      Eigen::Vector3d error_vec = target_position - current_position;
+      double error_norm = error_vec.norm();
+      if (error_norm > max_position_error) {
+        target_position = current_position + error_vec * (max_position_error / error_norm);
+      }
+      
+      // Smooth transition: blend towards target instead of instant jump
+      const double alpha = 0.3;  // Smoothing factor (0 = no change, 1 = instant)
+      desired_position_ = desired_position_ * (1.0 - alpha) + target_position * alpha;
+      
+      desired_orientation_ = delta_orientation_ * current_orientation;
+      desired_orientation_.normalize();
+      new_delta_received_ = false;
+    }
     position_d = desired_position_;
     orientation_d = desired_orientation_;
   }
   // Compute Cartesian error
   Eigen::Matrix<double, 6, 1> error;
   error.head(3) << current_position - position_d;
-  // error.tail(3) << computeOrientationError(orientation_d, current_orientation);
-  // Print error
-  RCLCPP_INFO(get_node()->get_logger(), "Position error: [%f, %f, %f]", error(0), error(1),
-               error(2));
+  error.tail(3).setZero();  // Disable orientation control to prevent velocity violations
+  
+  // Print error periodically (every ~100 updates to avoid spam)
+  static int counter = 0;
+  if (++counter % 100 == 0) {
+    RCLCPP_INFO(get_node()->get_logger(), "Position error: [%.4f, %.4f, %.4f], Orientation error: [%.4f, %.4f, %.4f]", 
+                error(0), error(1), error(2), error(3), error(4), error(5));
+  }
   // Get Jacobian from model
   std::array<double, 42> jacobian_array =
       franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
@@ -178,9 +199,19 @@ controller_interface::return_type CartesianImpedanceController::update(
   Eigen::Matrix<double, 6, 1> force = -k_gains_.cwiseProduct(error) - d_gains_.cwiseProduct(velocity);
   Vector7d tau_d = jacobian.transpose() * force + coriolis;
 
-  // Send torque commands directly (same pattern as joint_impedance_with_ik_example_controller)
+  // Apply torque rate limiting to prevent velocity violations
+  const double max_torque_rate = 50.0;  // Nm/s per control cycle (1ms = 0.001s)
+  const double delta_tau_max = max_torque_rate * 0.001;  // Max change per cycle
+  
   for (int i = 0; i < num_joints_; ++i) {
-    command_interfaces_[i].set_value(tau_d(i));
+    double delta_tau = tau_d(i) - tau_commanded_(i);
+    delta_tau = std::clamp(delta_tau, -delta_tau_max, delta_tau_max);
+    tau_commanded_(i) += delta_tau;
+  }
+
+  // Send rate-limited torque commands
+  for (int i = 0; i < num_joints_; ++i) {
+    command_interfaces_[i].set_value(tau_commanded_(i));
   }
 
   return controller_interface::return_type::OK;
