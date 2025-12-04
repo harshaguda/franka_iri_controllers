@@ -11,6 +11,19 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+//  ─────────────────────────────────────────────────────┐
+// │  Cartesian Impedance Control Flow                   │
+// └─────────────────────────────────────────────────────┘
+
+// 1. Current EE pose:        x_current (from forward kinematics)
+// 2. Desired EE pose:        x_desired (from topic)
+// 3. Cartesian error:        e = x_current - x_desired  [6x1]
+// 4. Cartesian velocity:     v = J · dq                 [6x1]
+// 5. Cartesian force:        F = -K·e - D·v             [6x1]
+// 6. Joint torques:          τ = J^T · F + coriolis    [7x1]
+//                                   ↑
+//                          Jacobian transpose maps 
+//                          Cartesian forces to joint torques
 
 #include <franka_iri_controllers/cartesian_impedance_controller.hpp>
 #include <franka_example_controllers/default_robot_behavior_utils.hpp>
@@ -79,12 +92,7 @@ void CartesianImpedanceController::deltaPoseCallback(
 
   delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
                                           msg->pose.orientation.y, msg->pose.orientation.z);
-  // RCLCPP_INFO(get_node()->get_logger(), "Received new delta pose.");
-  // RCLCPP_INFO(get_node()->get_logger(), "Delta position: [%f, %f, %f]", delta_position_.x(),
-  //             delta_position_.y(), delta_position_.z());
-  // RCLCPP_INFO(get_node()->get_logger(), "Delta orientation (quat): [%f, %f, %f, %f]",
-  //             delta_orientation_.w(), delta_orientation_.x(), delta_orientation_.y(),
-  //             delta_orientation_.z());
+
   // Compute new desired pose = initial + delta
   desired_position_ = initial_position_ + delta_position_;
   desired_orientation_ = delta_orientation_ * initial_orientation_;
@@ -142,12 +150,6 @@ controller_interface::return_type CartesianImpedanceController::update(
     position_d = desired_position_;
     orientation_d = desired_orientation_;
   }
-  // Print desired pose for debugging
-  // RCLCPP_INFO(get_node()->get_logger(), "Desired position: [%f, %f, %f]", position_d.x(), position_d.y(),
-  //              position_d.z());
-  // RCLCPP_INFO(get_node()->get_logger(), "Desired orientation (quat): [%f, %f, %f, %f]",
-  //              orientation_d.w(), orientation_d.x(), orientation_d.y(), orientation_d.z());
-
   // Compute Cartesian error
   Eigen::Matrix<double, 6, 1> error;
   error.head(3) << current_position - position_d;
@@ -171,9 +173,10 @@ controller_interface::return_type CartesianImpedanceController::update(
   // Compute Cartesian velocity
   Eigen::Matrix<double, 6, 1> velocity = jacobian * dq_filtered_;
 
-  // Impedance control law: tau = J^T * (-K * error - D * velocity) + coriolis
-  // This is the standard Cartesian impedance control formula
-  Vector7d tau_d = jacobian.transpose() * (-stiffness_ * error - damping_ * velocity) + coriolis;
+  // PD Impedance control law: tau = J^T * (-K .* error - D .* velocity) + coriolis
+  // Use element-wise multiplication (cwiseProduct) like joint impedance controller
+  Eigen::Matrix<double, 6, 1> force = -k_gains_.cwiseProduct(error) - d_gains_.cwiseProduct(velocity);
+  Vector7d tau_d = jacobian.transpose() * force + coriolis;
 
   // Send torque commands directly (same pattern as joint_impedance_with_ik_example_controller)
   for (int i = 0; i < num_joints_; ++i) {
@@ -186,9 +189,9 @@ controller_interface::return_type CartesianImpedanceController::update(
 CallbackReturn CartesianImpedanceController::on_init() {
   try {
     auto_declare<std::string>("arm_id", "fr3");
-    auto_declare<double>("translational_stiffness", 300.0);
-    auto_declare<double>("rotational_stiffness", 30.0);
-    auto_declare<double>("nullspace_stiffness", 0.5);
+    auto_declare<std::vector<double>>("k_gains", {750.0, 750.0, 750.0, 15.0, 15.0, 15.0});
+    auto_declare<std::vector<double>>("d_gains", {37.0, 37.0, 37.0, 2.0, 2.0, 2.0});
+    auto_declare<bool>("load_gripper", true);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception during on_init: %s", e.what());
     return CallbackReturn::ERROR;
@@ -201,24 +204,51 @@ CallbackReturn CartesianImpedanceController::on_init() {
   return CallbackReturn::SUCCESS;
 }
 
+bool CartesianImpedanceController::assign_parameters() {
+  arm_id_ = get_node()->get_parameter("arm_id").as_string();
+  is_gripper_loaded_ = get_node()->get_parameter("load_gripper").as_bool();
+
+  auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
+  auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
+  
+  // For Cartesian impedance, we need 6 gains (x, y, z, rx, ry, rz)
+  if (k_gains.empty()) {
+    RCLCPP_FATAL(get_node()->get_logger(), "k_gains parameter not set");
+    return false;
+  }
+  if (k_gains.size() != 6) {
+    RCLCPP_FATAL(get_node()->get_logger(), "k_gains should be of size 6 but is of size %ld",
+                 k_gains.size());
+    return false;
+  }
+  if (d_gains.empty()) {
+    RCLCPP_FATAL(get_node()->get_logger(), "d_gains parameter not set");
+    return false;
+  }
+  if (d_gains.size() != 6) {
+    RCLCPP_FATAL(get_node()->get_logger(), "d_gains should be of size 6 but is of size %ld",
+                 d_gains.size());
+    return false;
+  }
+  
+  for (int i = 0; i < 6; ++i) {
+    k_gains_(i) = k_gains.at(i);
+    d_gains_(i) = d_gains.at(i);
+  }
+  
+  RCLCPP_INFO(get_node()->get_logger(), "K gains: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+              k_gains_(0), k_gains_(1), k_gains_(2), k_gains_(3), k_gains_(4), k_gains_(5));
+  RCLCPP_INFO(get_node()->get_logger(), "D gains: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
+              d_gains_(0), d_gains_(1), d_gains_(2), d_gains_(3), d_gains_(4), d_gains_(5));
+  
+  return true;
+}
+
 CallbackReturn CartesianImpedanceController::on_configure(
     const rclcpp_lifecycle::State& /*previous_state*/) {
-  // Get parameters
-  arm_id_ = get_node()->get_parameter("arm_id").as_string();
-  translational_stiffness_ = get_node()->get_parameter("translational_stiffness").as_double();
-  rotational_stiffness_ = get_node()->get_parameter("rotational_stiffness").as_double();
-  nullspace_stiffness_ = get_node()->get_parameter("nullspace_stiffness").as_double();
-
-  // Setup stiffness and damping matrices
-  stiffness_.setZero();
-  stiffness_.topLeftCorner(3, 3) << translational_stiffness_ * Eigen::Matrix3d::Identity();
-  stiffness_.bottomRightCorner(3, 3) << rotational_stiffness_ * Eigen::Matrix3d::Identity();
-
-  damping_.setZero();
-  damping_.topLeftCorner(3, 3) << 2.0 * std::sqrt(translational_stiffness_) *
-                                      Eigen::Matrix3d::Identity();
-  damping_.bottomRightCorner(3, 3) << 2.0 * std::sqrt(rotational_stiffness_) *
-                                          Eigen::Matrix3d::Identity();
+  if (!assign_parameters()) {
+    return CallbackReturn::FAILURE;
+  }
 
   // Initialize robot model interface
   franka_robot_model_ = std::make_unique<franka_semantic_components::FrankaRobotModel>(

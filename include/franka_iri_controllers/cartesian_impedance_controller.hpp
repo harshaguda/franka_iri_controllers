@@ -70,6 +70,11 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Vector3d computeOrientationError(const Eigen::Quaterniond& orientation_d,
                                            const Eigen::Quaterniond& orientation);
 
+  /**
+   * @brief Assign parameters from ROS2 parameter server
+   */
+  bool assign_parameters();
+
   // Semantic interfaces
   std::unique_ptr<franka_semantic_components::FrankaCartesianPoseInterface> franka_cartesian_pose_;
   std::unique_ptr<franka_semantic_components::FrankaRobotModel> franka_robot_model_;
@@ -90,12 +95,12 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Vector7d dq_;
   Vector7d dq_filtered_;
 
-  // Impedance parameters
-  Eigen::Matrix<double, 6, 6> stiffness_;
-  Eigen::Matrix<double, 6, 6> damping_;
-  double translational_stiffness_{150.0};
-  double rotational_stiffness_{10.0};
-  double nullspace_stiffness_{0.5};
+  // Impedance control gains (PD control in Cartesian space)
+  // k_gains: stiffness for [x, y, z, rx, ry, rz] (6 DOF Cartesian space)
+  // d_gains: damping for [x, y, z, rx, ry, rz]
+  Eigen::Matrix<double, 6, 1> k_gains_;
+  Eigen::Matrix<double, 6, 1> d_gains_;
+  bool is_gripper_loaded_ = true;
 
   // Torque filtering and limiting
   Vector7d tau_commanded_;
