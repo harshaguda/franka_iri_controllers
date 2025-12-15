@@ -229,8 +229,8 @@ Eigen::Vector3d GazeboCartesianImpedanceController::computeOrientationError(
 }
 
 controller_interface::return_type GazeboCartesianImpedanceController::update(
-        const rclcpp::Time& /*time*/,
-        const rclcpp::Duration& /*period*/) {
+    const rclcpp::Time& /*time*/,
+    const rclcpp::Duration& period) {
     updateJointStates();
 
     if (!pinocchio_ready_) {
@@ -239,8 +239,10 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
         return controller_interface::return_type::ERROR;
     }
 
+    // First-order low-pass on measured joint velocities.
+    // kAlpha close to 1.0 => heavier filtering (slower response).
     const double kAlpha = 0.99;
-    dq_filtered_ = (1 - kAlpha) * dq_filtered_ + kAlpha * dq_;
+    dq_filtered_ = kAlpha * dq_filtered_ + (1.0 - kAlpha) * dq_;
 
     Eigen::Quaterniond current_orientation;
     Eigen::Vector3d current_position;
@@ -288,7 +290,7 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
     error.tail(3).setZero();
 
     static int counter = 0;
-    if (++counter % 100 == 0) {
+    if (++counter % 2500 == 0) {
         RCLCPP_INFO(get_node()->get_logger(),
                                 "Position error: [%.4f, %.4f, %.4f], Orientation error: [%.4f, %.4f, %.4f]",
                                 error(0), error(1), error(2), error(3), error(4), error(5));
@@ -300,8 +302,12 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
     Eigen::Matrix<double, 6, 1> force = -k_gains_.cwiseProduct(error) - d_gains_.cwiseProduct(velocity);
     Vector7d tau_d = jacobian.transpose() * force + coriolis_and_gravity;
 
-    const double max_torque_rate = 50.0;
-    const double delta_tau_max = max_torque_rate * 0.001;
+    // Torque-rate limit must scale with controller update period.
+    // The previous hard-coded 1 ms dt effectively crippled the controller
+    // if the actual update rate was lower (e.g., 100-500 Hz in Gazebo).
+    const double max_torque_rate = 50.0;  // [Nm/s]
+    const double dt = std::max(period.seconds(), 1e-4);
+    const double delta_tau_max = max_torque_rate * dt;
 
     for (int i = 0; i < num_joints_; ++i) {
         double delta_tau = tau_d(i) - tau_commanded_(i);
@@ -323,7 +329,7 @@ CallbackReturn GazeboCartesianImpedanceController::on_init() {
         auto_declare<std::vector<double>>("d_gains", {3.0, 3.0, 3.0, 2.0, 2.0, 2.0});
         auto_declare<bool>("load_gripper", true);
         auto_declare<std::string>("ee_frame", "");
-        auto_declare<bool>("use_gravity_compensation", true);
+        auto_declare<bool>("use_gravity_compensation", false);
     } catch (const std::exception& e) {
         RCLCPP_ERROR(get_node()->get_logger(), "Exception during on_init: %s", e.what());
         return CallbackReturn::ERROR;
