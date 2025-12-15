@@ -10,6 +10,7 @@
   <buildtool_depend>ament_cmake</buildtool_depend>
 
   <depend>controller_interface</depend>
+  <depend>franka_example_controllers</depend>
   <depend>franka_msgs</depend>
   <depend>franka_semantic_components</depend>
   <depend>geometry_msgs</depend>
