@@ -5,4 +5,11 @@
             Cartesian impedance controller that subscribes to /delta_pose topic for setting goal pose offset.
         </description>
     </class>
+
+    <class name="franka_iri_controllers/GazeboCartesianImpedanceController"
+           type="franka_iri_controllers::GazeboCartesianImpedanceController" base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Gazebo-focused Cartesian impedance controller exported under a Gazebo-specific plugin name for simulation configs.
+        </description>
+    </class>
 </library>

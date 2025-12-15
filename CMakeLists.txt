@@ -34,7 +34,7 @@ find_package(franka_example_controllers REQUIRED)
 add_library(
         ${PROJECT_NAME}
         SHARED
-        src/cartesian_impedance_controller.cpp
+        src/gazebo_cartesian_impedance_controller.cpp
         )
 target_include_directories(
         ${PROJECT_NAME}
@@ -73,6 +73,11 @@ install(
 install(
         DIRECTORY include/
         DESTINATION include
+)
+
+install(
+        DIRECTORY launch
+        DESTINATION share/${PROJECT_NAME}
 )
 
 
