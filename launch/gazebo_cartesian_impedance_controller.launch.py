@@ -115,6 +115,17 @@ def generate_launch_description():
         output='screen',
     )
 
+    # Visualize in RViz
+    rviz_file = os.path.join(get_package_share_directory('franka_description'), 'rviz',
+                             'visualize_franka.rviz')
+    rviz = Node(package='rviz2',
+             executable='rviz2',
+             name='rviz2',
+             namespace=namespace,
+             arguments=['--display-config', rviz_file, '-f', 'world'],
+    )
+
+
     load_joint_state_broadcaster = ExecuteProcess(
         cmd=['ros2', 'control', 'load_controller', '--set-state', 'active', 'joint_state_broadcaster'],
         output='screen',
@@ -133,6 +144,7 @@ def generate_launch_description():
             namespace_launch_argument,
             gazebo_empty_world,
             robot_state_publisher,
+            rviz,
             spawn,
             RegisterEventHandler(
                 event_handler=OnProcessExit(
