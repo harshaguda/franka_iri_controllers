@@ -241,8 +241,10 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
 
     // First-order low-pass on measured joint velocities.
     // kAlpha close to 1.0 => heavier filtering (slower response).
-    const double kAlpha = 0.99;
-    dq_filtered_ = kAlpha * dq_filtered_ + (1.0 - kAlpha) * dq_;
+    const double kAlpha = 0.5;
+    // dq_filtered_ = (1 - kAlpha) * dq_filtered_ + kAlpha * joint_velocities_current;
+    // dq_filtered_ = kAlpha * dq_filtered_ + (1.0 - kAlpha) * dq_;
+    dq_filtered_ = (1 - kAlpha) * dq_filtered_ + kAlpha * dq_;
 
     Eigen::Quaterniond current_orientation;
     Eigen::Vector3d current_position;
@@ -267,7 +269,7 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
         std::lock_guard<std::mutex> lock(delta_pose_mutex_);
         if (new_delta_received_) {
             Eigen::Vector3d target_position = current_position + delta_position_;
-            const double max_position_error = 0.12;
+            const double max_position_error = 0.3;
             Eigen::Vector3d error_vec = target_position - current_position;
             const double error_norm = error_vec.norm();
             if (error_norm > max_position_error) {
