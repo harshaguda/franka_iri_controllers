@@ -118,7 +118,7 @@ Eigen::Vector3d CartesianImpedanceController::computeOrientationError(
 
 controller_interface::return_type CartesianImpedanceController::update(
     const rclcpp::Time& /*time*/,
-    const rclcpp::Duration& /*period*/) {
+    const rclcpp::Duration& period/*period*/) {
   // Update joint states
   updateJointStates();
 
@@ -188,7 +188,7 @@ controller_interface::return_type CartesianImpedanceController::update(
   Eigen::Map<const Vector7d> coriolis(coriolis_array.data());
 
   // Filter joint velocities (same as other working controllers)
-  const double kAlpha = 0.99;
+  const double kAlpha = 0.5;
   dq_filtered_ = (1 - kAlpha) * dq_filtered_ + kAlpha * dq_;
 
   // Compute Cartesian velocity
@@ -200,8 +200,12 @@ controller_interface::return_type CartesianImpedanceController::update(
   Vector7d tau_d = jacobian.transpose() * force + coriolis;
 
   // Apply torque rate limiting to prevent velocity violations
-  const double max_torque_rate = 50.0;  // Nm/s per control cycle (1ms = 0.001s)
-  const double delta_tau_max = max_torque_rate * 0.001;  // Max change per cycle
+  // Torque-rate limit must scale with controller update period.
+    // The previous hard-coded 1 ms dt effectively crippled the controller
+    // if the actual update rate was lower (e.g., 100-500 Hz in Gazebo).
+    const double max_torque_rate = 50.0;  // [Nm/s]
+    const double dt = std::max(period.seconds(), 1e-4);
+    const double delta_tau_max = max_torque_rate * dt;
   
   for (int i = 0; i < num_joints_; ++i) {
     double delta_tau = tau_d(i) - tau_commanded_(i);
