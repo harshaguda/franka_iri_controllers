@@ -22,6 +22,10 @@
 #include <controller_interface/controller_interface.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <std_msgs/msg/bool.hpp>
+#include <franka_msgs/action/grasp.hpp>
+#include <franka_msgs/action/move.hpp>
 
 #include <franka_example_controllers/robot_utils.hpp>
 #include <franka_semantic_components/franka_cartesian_pose_interface.hpp>
@@ -41,6 +45,8 @@ namespace franka_iri_controllers {
 class CartesianImpedanceController : public controller_interface::ControllerInterface {
  public:
   using Vector7d = Eigen::Matrix<double, 7, 1>;
+  using GripperGrasp = franka_msgs::action::Grasp;
+  using GripperMove = franka_msgs::action::Move;
 
   [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration()
       const override;
@@ -139,6 +145,31 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
 
   // ROS subscriber
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr delta_pose_sub_;
+
+  // Gripper control
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr gripper_command_sub_;
+  rclcpp_action::Client<GripperGrasp>::SharedPtr gripper_grasp_action_client_;
+  rclcpp_action::Client<GripperMove>::SharedPtr gripper_move_action_client_;
+  bool last_gripper_close_command_{false};
+  bool have_last_gripper_command_{false};
+
+  std::string gripper_command_topic_{"/gripper_command"};
+  std::string gripper_grasp_action_name_{"franka_gripper/grasp"};
+  std::string gripper_move_action_name_{"franka_gripper/move"};
+
+  double gripper_open_width_{0.08};
+  double gripper_open_speed_{0.05};
+
+  double gripper_close_width_{0.0};
+  double gripper_close_speed_{0.05};
+  double gripper_close_force_{60.0};
+  double gripper_close_epsilon_inner_{0.005};
+  double gripper_close_epsilon_outer_{0.005};
+
+  double gripper_action_wait_timeout_s_{1.0};
+
+  void gripperCommandCallback(const std_msgs::msg::Bool::SharedPtr msg);
+  void sendGripperGoal(bool close_gripper);
 };
 
 }  // namespace franka_iri_controllers

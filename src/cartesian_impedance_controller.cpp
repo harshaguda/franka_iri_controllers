@@ -32,10 +32,98 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <chrono>
 
 #include <Eigen/Dense>
 
 namespace franka_iri_controllers {
+
+void CartesianImpedanceController::sendGripperGoal(bool close_gripper) {
+  if (!is_gripper_loaded_) {
+    RCLCPP_WARN(get_node()->get_logger(), "Gripper not loaded; ignoring /gripper_command.");
+    return;
+  }
+
+  const auto timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::duration<double>(std::max(0.0, gripper_action_wait_timeout_s_)));
+
+  if (close_gripper) {
+    if (!gripper_grasp_action_client_) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Gripper grasp action client not initialized.");
+      return;
+    }
+    if (!gripper_grasp_action_client_->wait_for_action_server(timeout)) {
+      RCLCPP_ERROR(get_node()->get_logger(),
+                   "Gripper grasp action server not available at '%s'",
+                   gripper_grasp_action_name_.c_str());
+      return;
+    }
+
+    auto goal_msg = GripperGrasp::Goal();
+    goal_msg.width = gripper_close_width_;
+    goal_msg.speed = gripper_close_speed_;
+    goal_msg.force = gripper_close_force_;
+    goal_msg.epsilon.inner = gripper_close_epsilon_inner_;
+    goal_msg.epsilon.outer = gripper_close_epsilon_outer_;
+
+    auto send_goal_options =
+        rclcpp_action::Client<GripperGrasp>::SendGoalOptions();
+    send_goal_options.result_callback =
+        [node = get_node()](
+            const rclcpp_action::ClientGoalHandle<GripperGrasp>::WrappedResult& result) {
+          if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+            RCLCPP_INFO(node->get_logger(), "Gripper CLOSE successful");
+          } else {
+            RCLCPP_WARN(node->get_logger(), "Gripper CLOSE failed");
+          }
+        };
+
+    gripper_grasp_action_client_->async_send_goal(goal_msg, send_goal_options);
+    return;
+  }
+
+  // Open gripper
+  if (!gripper_move_action_client_) {
+    RCLCPP_ERROR(get_node()->get_logger(), "Gripper move action client not initialized.");
+    return;
+  }
+  if (!gripper_move_action_client_->wait_for_action_server(timeout)) {
+    RCLCPP_ERROR(get_node()->get_logger(),
+                 "Gripper move action server not available at '%s'",
+                 gripper_move_action_name_.c_str());
+    return;
+  }
+
+  auto goal_msg = GripperMove::Goal();
+  goal_msg.width = gripper_open_width_;
+  goal_msg.speed = gripper_open_speed_;
+
+  auto send_goal_options = rclcpp_action::Client<GripperMove>::SendGoalOptions();
+  send_goal_options.result_callback =
+      [node = get_node()](
+          const rclcpp_action::ClientGoalHandle<GripperMove>::WrappedResult& result) {
+        if (result.code == rclcpp_action::ResultCode::SUCCEEDED) {
+          RCLCPP_INFO(node->get_logger(), "Gripper OPEN successful");
+        } else {
+          RCLCPP_WARN(node->get_logger(), "Gripper OPEN failed");
+        }
+      };
+
+  gripper_move_action_client_->async_send_goal(goal_msg, send_goal_options);
+}
+
+void CartesianImpedanceController::gripperCommandCallback(
+    const std_msgs::msg::Bool::SharedPtr msg) {
+  const bool close_gripper = msg->data;
+  if (have_last_gripper_command_ && close_gripper == last_gripper_close_command_) {
+    return;
+  }
+  have_last_gripper_command_ = true;
+  last_gripper_close_command_ = close_gripper;
+
+  RCLCPP_INFO(get_node()->get_logger(), "Gripper command: %s", close_gripper ? "CLOSE" : "OPEN");
+  sendGripperGoal(close_gripper);
+}
 
 controller_interface::InterfaceConfiguration
 CartesianImpedanceController::command_interface_configuration() const {
@@ -298,6 +386,26 @@ CallbackReturn CartesianImpedanceController::on_init() {
     auto_declare<double>("joint1_nullspace_stiffness", -1.0);
     auto_declare<double>("nullspace_damping", 0.0);
     auto_declare<double>("nullspace_projection_damping", 1e-6);
+
+    // Gripper command interface (true=close, false=open)
+    auto_declare<std::string>("gripper_command_topic", "/gripper_command");
+
+    // Franka gripper actions
+    auto_declare<std::string>("gripper_grasp_action_name", "franka_gripper/grasp");
+    auto_declare<std::string>("gripper_move_action_name", "franka_gripper/move");
+
+    // Open goal (Move)
+    auto_declare<double>("gripper_open_width", 0.08);
+    auto_declare<double>("gripper_open_speed", 0.05);
+
+    // Close goal (Grasp)
+    auto_declare<double>("gripper_close_width", 0.0);
+    auto_declare<double>("gripper_close_speed", 0.05);
+    auto_declare<double>("gripper_close_force", 60.0);
+    auto_declare<double>("gripper_close_epsilon_inner", 0.005);
+    auto_declare<double>("gripper_close_epsilon_outer", 0.005);
+
+    auto_declare<double>("gripper_action_wait_timeout_s", 1.0);
   } catch (const std::exception& e) {
     RCLCPP_ERROR(get_node()->get_logger(), "Exception during on_init: %s", e.what());
     return CallbackReturn::ERROR;
@@ -375,6 +483,27 @@ bool CartesianImpedanceController::assign_parameters() {
     nullspace_damping_ = std::max(0.0, get_node()->get_parameter("nullspace_damping").as_double());
     nullspace_projection_damping_ =
       std::max(1e-12, get_node()->get_parameter("nullspace_projection_damping").as_double());
+
+      gripper_command_topic_ = get_node()->get_parameter("gripper_command_topic").as_string();
+
+      gripper_grasp_action_name_ =
+        get_node()->get_parameter("gripper_grasp_action_name").as_string();
+      gripper_move_action_name_ =
+        get_node()->get_parameter("gripper_move_action_name").as_string();
+
+      gripper_open_width_ = get_node()->get_parameter("gripper_open_width").as_double();
+      gripper_open_speed_ = get_node()->get_parameter("gripper_open_speed").as_double();
+
+      gripper_close_width_ = get_node()->get_parameter("gripper_close_width").as_double();
+      gripper_close_speed_ = get_node()->get_parameter("gripper_close_speed").as_double();
+      gripper_close_force_ = get_node()->get_parameter("gripper_close_force").as_double();
+      gripper_close_epsilon_inner_ =
+        get_node()->get_parameter("gripper_close_epsilon_inner").as_double();
+      gripper_close_epsilon_outer_ =
+        get_node()->get_parameter("gripper_close_epsilon_outer").as_double();
+
+      gripper_action_wait_timeout_s_ =
+        get_node()->get_parameter("gripper_action_wait_timeout_s").as_double();
   
   RCLCPP_INFO(get_node()->get_logger(), "K gains: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
               k_gains_(0), k_gains_(1), k_gains_(2), k_gains_(3), k_gains_(4), k_gains_(5));
@@ -430,8 +559,22 @@ CallbackReturn CartesianImpedanceController::on_configure(
       "/delta_pose", rclcpp::QoS(1).best_effort(),
       std::bind(&CartesianImpedanceController::deltaPoseCallback, this, std::placeholders::_1));
 
+    // Create gripper action clients + command subscriber
+    gripper_grasp_action_client_ =
+      rclcpp_action::create_client<GripperGrasp>(get_node(), gripper_grasp_action_name_);
+    gripper_move_action_client_ =
+      rclcpp_action::create_client<GripperMove>(get_node(), gripper_move_action_name_);
+    gripper_command_sub_ = get_node()->create_subscription<std_msgs::msg::Bool>(
+      gripper_command_topic_, rclcpp::QoS(10).reliable(),
+      std::bind(&CartesianImpedanceController::gripperCommandCallback, this, std::placeholders::_1));
+
   RCLCPP_INFO(get_node()->get_logger(),
               "Cartesian Impedance Controller configured. Subscribing to /delta_pose");
+
+  RCLCPP_INFO(get_node()->get_logger(),
+              "Gripper control enabled: topic '%s' -> grasp '%s' (close) / move '%s' (open)",
+              gripper_command_topic_.c_str(), gripper_grasp_action_name_.c_str(),
+              gripper_move_action_name_.c_str());
 
   return CallbackReturn::SUCCESS;
 }
