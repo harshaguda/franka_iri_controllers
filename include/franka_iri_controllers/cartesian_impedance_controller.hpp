@@ -96,6 +96,19 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Vector7d dq_;
   Vector7d dq_filtered_;
 
+    // Nullspace posture control (holds the startup joint configuration)
+    Vector7d q_nullspace_target_{Vector7d::Zero()};
+    Vector7d nullspace_stiffness_{Vector7d::Zero()};
+    double nullspace_damping_{0.0};
+    double nullspace_projection_damping_{1e-6};
+
+    // Cartesian error clipping (per-axis, symmetrical via separate +/- values).
+    // Negative values disable clipping for that direction.
+    Eigen::Vector3d trans_clip_pos_{Eigen::Vector3d::Constant(-1.0)};
+    Eigen::Vector3d trans_clip_neg_{Eigen::Vector3d::Constant(-1.0)};
+    Eigen::Vector3d rot_clip_pos_{Eigen::Vector3d::Constant(-1.0)};
+    Eigen::Vector3d rot_clip_neg_{Eigen::Vector3d::Constant(-1.0)};
+
   // Impedance control gains (PD control in Cartesian space)
   // k_gains: stiffness for [x, y, z, rx, ry, rz] (6 DOF Cartesian space)
   // d_gains: damping for [x, y, z, rx, ry, rz]
@@ -105,8 +118,14 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
 
   // Torque filtering and limiting
   Vector7d tau_commanded_;
-  static constexpr double kMaxTorqueRate{100.0};  // Nm/s - conservative limit
-  static constexpr double kTorqueRateAlpha{0.9};  // Exponential filter: new = 0.1*target + 0.9*old
+    double dq_filter_alpha_{0.5};
+    double max_torque_rate_{50.0};  // [Nm/s]
+
+    bool use_gravity_compensation_{false};
+
+    // Delta-pose smoothing and safety
+    double delta_pose_alpha_{0.3};
+    double delta_pose_max_position_error_{0.3};
 
   // Controller state
   bool initialization_flag_{true};
@@ -122,4 +141,4 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr delta_pose_sub_;
 };
 
-}  // namespace franka_example_controllers
+}  // namespace franka_iri_controllers
