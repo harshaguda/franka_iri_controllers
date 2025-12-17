@@ -260,6 +260,9 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
         delta_position_.setZero();
         dq_filtered_.setZero();
         tau_commanded_.setZero();
+
+        // Nullspace target is the startup joint configuration.
+        q_nullspace_target_ = q_;
         initialization_flag_ = false;
     }
 
@@ -289,8 +292,31 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
 
     Eigen::Matrix<double, 6, 1> error;
     error.head(3) << current_position - position_d;
-    error.tail(3).setZero();
+    // error.tail(3).setZero();
+    error.tail(3) << computeOrientationError(orientation_d, current_orientation);
 
+    // Optional per-axis error clipping (negative values disable clipping for that direction).
+    for (int axis = 0; axis < 3; ++axis) {
+        const double pos_clip = trans_clip_pos_(axis);
+        const double neg_clip = trans_clip_neg_(axis);
+        if (pos_clip >= 0.0) {
+            error(axis) = std::min(error(axis), pos_clip);
+        }
+        if (neg_clip >= 0.0) {
+            error(axis) = std::max(error(axis), -neg_clip);
+        }
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        const int idx = 3 + axis;
+        const double pos_clip = rot_clip_pos_(axis);
+        const double neg_clip = rot_clip_neg_(axis);
+        if (pos_clip >= 0.0) {
+            error(idx) = std::min(error(idx), pos_clip);
+        }
+        if (neg_clip >= 0.0) {
+            error(idx) = std::max(error(idx), -neg_clip);
+        }
+    }
     static int counter = 0;
     if (++counter % 2500 == 0) {
         RCLCPP_INFO(get_node()->get_logger(),
@@ -303,6 +329,20 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
 
     Eigen::Matrix<double, 6, 1> force = -k_gains_.cwiseProduct(error) - d_gains_.cwiseProduct(velocity);
     Vector7d tau_d = jacobian.transpose() * force + coriolis_and_gravity;
+
+    // Optional nullspace posture control (projected to not affect the Cartesian task).
+    // tau_null = N * (K_ns*(q_target - q) - D_ns*dq)
+    if (nullspace_stiffness_.maxCoeff() > 0.0 || nullspace_damping_ > 0.0) {
+        Eigen::Matrix<double, 6, 6> JJt = jacobian * jacobian.transpose();
+        JJt.diagonal().array() += nullspace_projection_damping_;
+        const Eigen::Matrix<double, 6, 6> JJt_inv = JJt.ldlt().solve(Eigen::Matrix<double, 6, 6>::Identity());
+        const Eigen::Matrix<double, 7, 6> J_pinv = jacobian.transpose() * JJt_inv;
+        const Eigen::Matrix<double, 7, 7> N = Eigen::Matrix<double, 7, 7>::Identity() - J_pinv * jacobian;
+
+        const Vector7d tau_ns = nullspace_stiffness_.cwiseProduct(q_nullspace_target_ - q_)
+                - nullspace_damping_ * dq_filtered_;
+        tau_d += N * tau_ns;
+    }
 
     // Torque-rate limit must scale with controller update period.
     // The previous hard-coded 1 ms dt effectively crippled the controller
@@ -332,6 +372,26 @@ CallbackReturn GazeboCartesianImpedanceController::on_init() {
         auto_declare<bool>("load_gripper", true);
         auto_declare<std::string>("ee_frame", "");
         auto_declare<bool>("use_gravity_compensation", false);
+
+        // Optional Cartesian error clipping (negative values disable clipping).
+        auto_declare<double>("translational_clip_x", -1.0);
+        auto_declare<double>("translational_clip_y", -1.0);
+        auto_declare<double>("translational_clip_z", -1.0);
+        auto_declare<double>("translational_clip_neg_x", -1.0);
+        auto_declare<double>("translational_clip_neg_y", -1.0);
+        auto_declare<double>("translational_clip_neg_z", -1.0);
+        auto_declare<double>("rotational_clip_x", -1.0);
+        auto_declare<double>("rotational_clip_y", -1.0);
+        auto_declare<double>("rotational_clip_z", -1.0);
+        auto_declare<double>("rotational_clip_neg_x", -1.0);
+        auto_declare<double>("rotational_clip_neg_y", -1.0);
+        auto_declare<double>("rotational_clip_neg_z", -1.0);
+
+        // Optional nullspace posture control (0 disables).
+        auto_declare<double>("nullspace_stiffness", 0.0);
+        auto_declare<double>("joint1_nullspace_stiffness", -1.0);
+        auto_declare<double>("nullspace_damping", 0.0);
+        auto_declare<double>("nullspace_projection_damping", 1e-6);
     } catch (const std::exception& e) {
         RCLCPP_ERROR(get_node()->get_logger(), "Exception during on_init: %s", e.what());
         return CallbackReturn::ERROR;
@@ -369,10 +429,51 @@ bool GazeboCartesianImpedanceController::assign_parameters() {
         d_gains_(i) = d_gains.at(i);
     }
 
+        // Error clipping (negative values mean disabled for that direction)
+        trans_clip_pos_ << get_node()->get_parameter("translational_clip_x").as_double(),
+            get_node()->get_parameter("translational_clip_y").as_double(),
+            get_node()->get_parameter("translational_clip_z").as_double();
+        trans_clip_neg_ << get_node()->get_parameter("translational_clip_neg_x").as_double(),
+            get_node()->get_parameter("translational_clip_neg_y").as_double(),
+            get_node()->get_parameter("translational_clip_neg_z").as_double();
+
+        rot_clip_pos_ << get_node()->get_parameter("rotational_clip_x").as_double(),
+            get_node()->get_parameter("rotational_clip_y").as_double(),
+            get_node()->get_parameter("rotational_clip_z").as_double();
+        rot_clip_neg_ << get_node()->get_parameter("rotational_clip_neg_x").as_double(),
+            get_node()->get_parameter("rotational_clip_neg_y").as_double(),
+            get_node()->get_parameter("rotational_clip_neg_z").as_double();
+
+        // Nullspace posture control
+        const double nullspace_stiffness_scalar =
+            std::max(0.0, get_node()->get_parameter("nullspace_stiffness").as_double());
+        nullspace_stiffness_.setConstant(nullspace_stiffness_scalar);
+        const double joint1_ns = get_node()->get_parameter("joint1_nullspace_stiffness").as_double();
+        if (joint1_ns >= 0.0) {
+        nullspace_stiffness_(0) = joint1_ns;
+        }
+        nullspace_damping_ = std::max(0.0, get_node()->get_parameter("nullspace_damping").as_double());
+        nullspace_projection_damping_ =
+            std::max(1e-12, get_node()->get_parameter("nullspace_projection_damping").as_double());
+
     RCLCPP_INFO(get_node()->get_logger(), "K gains: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
                             k_gains_(0), k_gains_(1), k_gains_(2), k_gains_(3), k_gains_(4), k_gains_(5));
     RCLCPP_INFO(get_node()->get_logger(), "D gains: [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f]",
                             d_gains_(0), d_gains_(1), d_gains_(2), d_gains_(3), d_gains_(4), d_gains_(5));
+
+    RCLCPP_INFO(get_node()->get_logger(),
+                            "Clips trans(+): [%.4f, %.4f, %.4f], trans(-): [%.4f, %.4f, %.4f]",
+                            trans_clip_pos_(0), trans_clip_pos_(1), trans_clip_pos_(2),
+                            trans_clip_neg_(0), trans_clip_neg_(1), trans_clip_neg_(2));
+    RCLCPP_INFO(get_node()->get_logger(),
+                            "Clips rot(+): [%.4f, %.4f, %.4f], rot(-): [%.4f, %.4f, %.4f]",
+                            rot_clip_pos_(0), rot_clip_pos_(1), rot_clip_pos_(2),
+                            rot_clip_neg_(0), rot_clip_neg_(1), rot_clip_neg_(2));
+    RCLCPP_INFO(get_node()->get_logger(),
+                            "Nullspace stiffness: [%.3f, %.3f, %.3f, %.3f, %.3f, %.3f, %.3f], damping: %.3f",
+                            nullspace_stiffness_(0), nullspace_stiffness_(1), nullspace_stiffness_(2),
+                            nullspace_stiffness_(3), nullspace_stiffness_(4), nullspace_stiffness_(5),
+                            nullspace_stiffness_(6), nullspace_damping_);
 
     return true;
 }

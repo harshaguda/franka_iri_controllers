@@ -82,6 +82,19 @@ class GazeboCartesianImpedanceController : public controller_interface::Controll
   Vector7d dq_;
   Vector7d dq_filtered_;
 
+  // Nullspace posture control (holds the startup joint configuration)
+  Vector7d q_nullspace_target_{Vector7d::Zero()};
+  Vector7d nullspace_stiffness_{Vector7d::Zero()};
+  double nullspace_damping_{0.0};
+  double nullspace_projection_damping_{1e-6};
+
+  // Cartesian error clipping (per-axis, symmetrical via separate +/- values).
+  // Negative values disable clipping for that direction.
+  Eigen::Vector3d trans_clip_pos_{Eigen::Vector3d::Constant(-1.0)};
+  Eigen::Vector3d trans_clip_neg_{Eigen::Vector3d::Constant(-1.0)};
+  Eigen::Vector3d rot_clip_pos_{Eigen::Vector3d::Constant(-1.0)};
+  Eigen::Vector3d rot_clip_neg_{Eigen::Vector3d::Constant(-1.0)};
+
   Eigen::Matrix<double, 6, 1> k_gains_;
   Eigen::Matrix<double, 6, 1> d_gains_;
   bool is_gripper_loaded_ = true;
