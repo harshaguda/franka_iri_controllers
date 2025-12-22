@@ -209,6 +209,15 @@ void GazeboCartesianImpedanceController::deltaPoseCallback(
     delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
                                                                                  msg->pose.orientation.y, msg->pose.orientation.z);
 
+    // Treat incoming orientation as a delta quaternion; ensure unit length.
+    // Non-unit quaternions can introduce unintended scaling and destabilize the controller.
+    const double n = delta_orientation_.norm();
+    if (std::isfinite(n) && n > 1e-12) {
+        delta_orientation_.coeffs() /= n;
+    } else {
+        delta_orientation_ = Eigen::Quaterniond::Identity();
+    }
+
     new_delta_received_ = true;
 }
 
@@ -221,11 +230,26 @@ Eigen::Vector3d GazeboCartesianImpedanceController::computeOrientationError(
     }
 
     Eigen::Quaterniond error_quaternion(orientation_corrected.inverse() * orientation_d);
+    error_quaternion.normalize();
 
-    Eigen::Vector3d error;
-    error << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+    // Convert quaternion error to a rotation vector (axis * angle), expressed in the
+    // current EE frame, then transform to base/world. This avoids Euler and provides
+    // an error with units of radians (more intuitive gain tuning than using the
+    // quaternion vector part directly).
+    if (error_quaternion.w() < 0.0) {
+        error_quaternion.coeffs() *= -1.0;
+    }
 
-    return orientation_corrected.toRotationMatrix() * error;
+    const Eigen::Vector3d v(error_quaternion.x(), error_quaternion.y(), error_quaternion.z());
+    const double v_norm = v.norm();
+    Eigen::Vector3d rot_vec = Eigen::Vector3d::Zero();
+    if (v_norm > 1e-12) {
+        const double angle = 2.0 * std::atan2(v_norm, error_quaternion.w());
+        rot_vec = angle * (v / v_norm);
+    }
+
+    // Transform to base frame and match libfranka sign convention.
+    return -orientation_corrected.toRotationMatrix() * rot_vec;
 }
 
 controller_interface::return_type GazeboCartesianImpedanceController::update(
@@ -282,7 +306,10 @@ controller_interface::return_type GazeboCartesianImpedanceController::update(
             const double alpha = 0.3;
             desired_position_ = desired_position_ * (1.0 - alpha) + target_position * alpha;
 
-            desired_orientation_ = delta_orientation_ * current_orientation;
+            // Quaternion-only orientation update (no Euler). Use slerp to avoid step changes.
+            Eigen::Quaterniond target_orientation = delta_orientation_ * current_orientation;
+            target_orientation.normalize();
+            desired_orientation_ = desired_orientation_.slerp(alpha, target_orientation);
             desired_orientation_.normalize();
             new_delta_received_ = false;
         }
