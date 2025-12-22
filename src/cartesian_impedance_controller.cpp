@@ -268,7 +268,9 @@ controller_interface::return_type CartesianImpedanceController::update(
   {
     std::lock_guard<std::mutex> lock(delta_pose_mutex_);
     if (new_delta_received_) {
-      Eigen::Vector3d target_position = current_position + delta_position_;
+      // Interpret /delta_pose as an offset from the *initial* pose.
+      // This avoids command-chasing when the same delta is published repeatedly.
+      Eigen::Vector3d target_position = initial_position_ + delta_position_;
       
       // Clamp maximum position error to prevent large jumps
       const double max_position_error = std::max(0.0, delta_pose_max_position_error_);
@@ -283,7 +285,7 @@ controller_interface::return_type CartesianImpedanceController::update(
       desired_position_ = desired_position_ * (1.0 - alpha) + target_position * alpha;
 
       // Quaternion-only orientation update (no Euler). Use slerp to avoid step changes.
-      Eigen::Quaterniond target_orientation = delta_orientation_ * current_orientation;
+      Eigen::Quaterniond target_orientation = delta_orientation_ * initial_orientation_;
       target_orientation.normalize();
       desired_orientation_ = desired_orientation_.slerp(alpha, target_orientation);
       desired_orientation_.normalize();
@@ -332,6 +334,21 @@ controller_interface::return_type CartesianImpedanceController::update(
   // PD Impedance control law: tau = J^T * (-K .* error - D .* velocity) + coriolis
   // Use element-wise multiplication (cwiseProduct) like joint impedance controller
   Eigen::Matrix<double, 6, 1> force = -k_gains_.cwiseProduct(error) - d_gains_.cwiseProduct(velocity);
+
+  // Optional wrench saturation to reduce risk of reflexes (e.g. joint_velocity_violation)
+  // without forcing extremely low gains.
+  if (max_cartesian_force_ > 0.0) {
+    const double f_norm = force.head(3).norm();
+    if (f_norm > max_cartesian_force_) {
+      force.head(3) *= (max_cartesian_force_ / f_norm);
+    }
+  }
+  if (max_cartesian_torque_ > 0.0) {
+    const double t_norm = force.tail(3).norm();
+    if (t_norm > max_cartesian_torque_) {
+      force.tail(3) *= (max_cartesian_torque_ / t_norm);
+    }
+  }
   Vector7d tau_d = jacobian.transpose() * force + compensation;
 
   // Optional nullspace posture control (projected to not affect the Cartesian task).
@@ -381,6 +398,10 @@ CallbackReturn CartesianImpedanceController::on_init() {
     auto_declare<bool>("use_gravity_compensation", false);
     auto_declare<double>("dq_filter_alpha", 0.5);
     auto_declare<double>("max_torque_rate", 50.0);
+
+    // Optional wrench saturation (<=0 disables)
+    auto_declare<double>("max_cartesian_force", -1.0);
+    auto_declare<double>("max_cartesian_torque", -1.0);
 
     // Delta pose smoothing / safety
     auto_declare<double>("delta_pose_alpha", 0.3);
@@ -444,6 +465,8 @@ bool CartesianImpedanceController::assign_parameters() {
   use_gravity_compensation_ = get_node()->get_parameter("use_gravity_compensation").as_bool();
   dq_filter_alpha_ = get_node()->get_parameter("dq_filter_alpha").as_double();
   max_torque_rate_ = get_node()->get_parameter("max_torque_rate").as_double();
+  max_cartesian_force_ = get_node()->get_parameter("max_cartesian_force").as_double();
+  max_cartesian_torque_ = get_node()->get_parameter("max_cartesian_torque").as_double();
   delta_pose_alpha_ = get_node()->get_parameter("delta_pose_alpha").as_double();
   delta_pose_max_position_error_ =
       get_node()->get_parameter("delta_pose_max_position_error").as_double();
