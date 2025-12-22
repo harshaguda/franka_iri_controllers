@@ -93,6 +93,14 @@ void CartesianImpedanceController::deltaPoseCallback(
   delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
                                           msg->pose.orientation.y, msg->pose.orientation.z);
 
+  // Treat incoming orientation as a delta quaternion; ensure unit length.
+  const double n = delta_orientation_.norm();
+  if (std::isfinite(n) && n > 1e-12) {
+    delta_orientation_.coeffs() /= n;
+  } else {
+    delta_orientation_ = Eigen::Quaterniond::Identity();
+  }
+
   new_delta_received_ = true;
 }
 
@@ -107,13 +115,21 @@ Eigen::Vector3d CartesianImpedanceController::computeOrientationError(
 
   // "Difference" quaternion
   Eigen::Quaterniond error_quaternion(orientation_corrected.inverse() * orientation_d);
+  error_quaternion.normalize();
+  if (error_quaternion.w() < 0.0) {
+    error_quaternion.coeffs() *= -1.0;
+  }
 
-  // Extract vector part and transform to base frame
-  Eigen::Vector3d error;
-  error << error_quaternion.x(), error_quaternion.y(), error_quaternion.z();
+  const Eigen::Vector3d v(error_quaternion.x(), error_quaternion.y(), error_quaternion.z());
+  const double v_norm = v.norm();
+  Eigen::Vector3d rot_vec = Eigen::Vector3d::Zero();
+  if (v_norm > 1e-12) {
+    const double angle = 2.0 * std::atan2(v_norm, error_quaternion.w());
+    rot_vec = angle * (v / v_norm);
+  }
 
-  // Transform error to base frame
-  return orientation_corrected.toRotationMatrix() * error;
+  // Transform error to base frame and match libfranka sign convention.
+  return -orientation_corrected.toRotationMatrix() * rot_vec;
 }
 
 controller_interface::return_type CartesianImpedanceController::update(
