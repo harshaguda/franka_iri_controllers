@@ -281,8 +281,11 @@ controller_interface::return_type CartesianImpedanceController::update(
       // Smooth transition: blend towards target instead of instant jump
       const double alpha = std::clamp(delta_pose_alpha_, 0.0, 1.0);
       desired_position_ = desired_position_ * (1.0 - alpha) + target_position * alpha;
-      
-      desired_orientation_ = delta_orientation_ * current_orientation;
+
+      // Quaternion-only orientation update (no Euler). Use slerp to avoid step changes.
+      Eigen::Quaterniond target_orientation = delta_orientation_ * current_orientation;
+      target_orientation.normalize();
+      desired_orientation_ = desired_orientation_.slerp(alpha, target_orientation);
       desired_orientation_.normalize();
       new_delta_received_ = false;
     }
