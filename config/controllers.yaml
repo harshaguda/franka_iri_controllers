@@ -217,6 +217,36 @@
   cartesian_impedance_controller:
     ros__parameters:
       arm_id: "fr3"
+
+      # Cartesian impedance gains (x, y, z, rx, ry, rz)
+      # k_gains: [750.0, 750.0, 750.0, 15.0, 15.0, 15.0]
+      # d_gains: [37.0, 37.0, 37.0, 2.0, 2.0, 2.0]
+      # k_gains: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0]  # Too low - robot doesn't track
+      # d_gains: [15.0, 15.0, 15.0, 2.0, 2.0, 2.0]
+      k_gains: [100.0, 100.0, 100.0, 2.0, 2.0, 2.0]
+      d_gains: [25.0, 25.0, 25.0, 2.0, 2.0, 2.0]
+
+      # Safety/smoothness knobs (reduce risk of libfranka reflex: joint_velocity_violation)
+      # Smaller alpha => slower pose changes; smaller max error => smaller step commands.
+      delta_pose_alpha: 0.1
+      delta_pose_max_position_error: 0.05
+
+      # Optional per-axis error clipping (negative values disable clipping).
+      translational_clip_x: 0.05
+      translational_clip_y: 0.05
+      translational_clip_z: 0.05
+      translational_clip_neg_x: 0.05
+      translational_clip_neg_y: 0.05
+      translational_clip_neg_z: 0.05
+      rotational_clip_x: 0.35
+      rotational_clip_y: 0.35
+      rotational_clip_z: 0.35
+      rotational_clip_neg_x: 0.35
+      rotational_clip_neg_y: 0.35
+      rotational_clip_neg_z: 0.35
+
+      dq_filter_alpha: 0.5
+      max_torque_rate: 25.0
       load_gripper: true
 
       # Gripper command interface: true=close (Grasp), false=open (Move)
@@ -259,15 +289,3 @@
         - 10.0
         - 10.0
         - 5.0
-
-/**:
-  cartesian_impedance_controller:
-    ros__parameters:
-      arm_id: "fr3"
-      # k_gains: [750.0, 750.0, 750.0, 15.0, 15.0, 15.0]  # Kx, Ky, Kz, Krx, Kry, Krz
-      # d_gains: [37.0, 37.0, 37.0, 2.0, 2.0, 2.0]  # Dx, Dy, Dz, Drx, Dry, Drz
-      # k_gains: [50.0, 50.0, 50.0, 5.0, 5.0, 5.0]  # Too low - robot doesn't track
-      # d_gains: [15.0, 15.0, 15.0, 2.0, 2.0, 2.0]  # Dx, Dy, Dz, Drx, Dry, Drz
-      k_gains: [100.0, 100.0, 100.0, 2.0, 2.0, 2.0]  # Kx, Ky, Kz, Krx, Kry, Krz
-      d_gains: [25.0, 25.0, 25.0, 2.0, 2.0, 2.0]  # Dx, Dy, Dz, Drx, Dry, Drz
-      load_gripper: true

@@ -17,8 +17,10 @@
   <depend>pinocchio</depend>
   <depend>pluginlib</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>rclcpp_lifecycle</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
   <depend>std_srvs</depend>
 
   <exec_depend>ament_index_python</exec_depend>

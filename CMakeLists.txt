@@ -26,7 +26,9 @@ find_package(moveit_msgs REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(franka_example_controllers REQUIRED)
@@ -56,7 +58,9 @@ ament_target_dependencies(
         pinocchio
         pluginlib
         rclcpp
+        rclcpp_action
         rclcpp_lifecycle
+        std_msgs
         std_srvs
 )
 

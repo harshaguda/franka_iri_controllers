@@ -127,6 +127,11 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
     double dq_filter_alpha_{0.5};
     double max_torque_rate_{50.0};  // [Nm/s]
 
+    // Optional Cartesian wrench saturation (<=0 disables).
+    // Translational part [N], rotational part [Nm].
+    double max_cartesian_force_{-1.0};
+    double max_cartesian_torque_{-1.0};
+
     bool use_gravity_compensation_{false};
 
     // Delta-pose smoothing and safety
