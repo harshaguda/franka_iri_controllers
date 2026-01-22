@@ -37,10 +37,12 @@ namespace franka_iri_controllers {
 
 /**
  * @brief Cartesian impedance controller that subscribes to /delta_pose topic
- * 
+ *
  * This controller implements a Cartesian impedance control law. The equilibrium
- * point is set by subscribing to a /delta_pose topic, which provides delta
- * position/orientation that is added to the initial pose.
+ * point is set by subscribing to a /delta_pose topic. By default, the topic
+ * provides delta position/orientation added to the initial pose. When
+ * use_absolute_target_pose=true, the topic is interpreted as an absolute target
+ * pose in the base frame.
  */
 class CartesianImpedanceController : public controller_interface::ControllerInterface {
  public:
@@ -91,11 +93,14 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
   Eigen::Quaterniond desired_orientation_;
   Eigen::Vector3d desired_position_;
 
-  // Delta pose (from topic)
+  // Delta pose (from topic) or absolute target pose
   Eigen::Quaterniond delta_orientation_;
   Eigen::Vector3d delta_position_;
+  Eigen::Quaterniond target_orientation_;
+  Eigen::Vector3d target_position_;
   std::mutex delta_pose_mutex_;
   bool new_delta_received_{false};
+  bool use_absolute_target_pose_{false};
 
   // Joint states
   Vector7d q_;
@@ -137,6 +142,7 @@ class CartesianImpedanceController : public controller_interface::ControllerInte
     // Delta-pose smoothing and safety
     double delta_pose_alpha_{0.3};
     double delta_pose_max_position_error_{0.3};
+    std::string target_pose_topic_{"/target_pose_dmp"};
 
   // Controller state
   bool initialization_flag_{true};

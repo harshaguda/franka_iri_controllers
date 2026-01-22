@@ -175,18 +175,32 @@ void CartesianImpedanceController::deltaPoseCallback(
     const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
   std::lock_guard<std::mutex> lock(delta_pose_mutex_);
 
-  delta_position_ = Eigen::Vector3d(msg->pose.position.x, msg->pose.position.y,
-                                    msg->pose.position.z);
-
-  delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
-                                          msg->pose.orientation.y, msg->pose.orientation.z);
-
-  // Treat incoming orientation as a delta quaternion; ensure unit length.
-  const double n = delta_orientation_.norm();
-  if (std::isfinite(n) && n > 1e-12) {
-    delta_orientation_.coeffs() /= n;
+  if (use_absolute_target_pose_) {
+    target_position_ = Eigen::Vector3d(msg->pose.position.x, msg->pose.position.y,
+                                       msg->pose.position.z);
+    target_orientation_ = Eigen::Quaterniond::Identity();
+    // Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
+                                            //  msg->pose.orientation.y, msg->pose.orientation.z);
+    const double n = target_orientation_.norm();
+    if (std::isfinite(n) && n > 1e-12) {
+      target_orientation_.coeffs() /= n;
+    } else {
+      target_orientation_ = Eigen::Quaterniond::Identity();
+    }
   } else {
-    delta_orientation_ = Eigen::Quaterniond::Identity();
+    delta_position_ = Eigen::Vector3d(msg->pose.position.x, msg->pose.position.y,
+                                      msg->pose.position.z);
+
+    delta_orientation_ = Eigen::Quaterniond(msg->pose.orientation.w, msg->pose.orientation.x,
+                                            msg->pose.orientation.y, msg->pose.orientation.z);
+
+    // Treat incoming orientation as a delta quaternion; ensure unit length.
+    const double n = delta_orientation_.norm();
+    if (std::isfinite(n) && n > 1e-12) {
+      delta_orientation_.coeffs() /= n;
+    } else {
+      delta_orientation_ = Eigen::Quaterniond::Identity();
+    }
   }
 
   new_delta_received_ = true;
@@ -229,7 +243,7 @@ controller_interface::return_type CartesianImpedanceController::update(
   // Get current Cartesian pose
   auto [current_orientation, current_position] =
       franka_cartesian_pose_->getCurrentOrientationAndTranslation();
-
+  
   // Get Jacobian from model
   std::array<double, 42> jacobian_array =
       franka_robot_model_->getZeroJacobian(franka::Frame::kEndEffector);
@@ -268,10 +282,16 @@ controller_interface::return_type CartesianImpedanceController::update(
   {
     std::lock_guard<std::mutex> lock(delta_pose_mutex_);
     if (new_delta_received_) {
-      // Interpret /delta_pose as an offset from the *initial* pose.
-      // This avoids command-chasing when the same delta is published repeatedly.
-      Eigen::Vector3d target_position = initial_position_ + delta_position_;
-      
+      Eigen::Vector3d target_position;
+      if (use_absolute_target_pose_) {
+        // Absolute target pose in base frame.
+        target_position = target_position_;
+      } else {
+        // Interpret /delta_pose as an offset from the *initial* pose.
+        // This avoids command-chasing when the same delta is published repeatedly.
+        target_position = initial_position_ + delta_position_;
+      }
+
       // Clamp maximum position error to prevent large jumps
       const double max_position_error = std::max(0.0, delta_pose_max_position_error_);
       Eigen::Vector3d error_vec = target_position - current_position;
@@ -284,11 +304,8 @@ controller_interface::return_type CartesianImpedanceController::update(
       const double alpha = std::clamp(delta_pose_alpha_, 0.0, 1.0);
       desired_position_ = desired_position_ * (1.0 - alpha) + target_position * alpha;
 
-      // Quaternion-only orientation update (no Euler). Use slerp to avoid step changes.
-      Eigen::Quaterniond target_orientation = delta_orientation_ * initial_orientation_;
-      target_orientation.normalize();
-      desired_orientation_ = desired_orientation_.slerp(alpha, target_orientation);
-      desired_orientation_.normalize();
+      // Keep orientation fixed at the current orientation.
+      desired_orientation_ = current_orientation;
       new_delta_received_ = false;
     }
     position_d = desired_position_;
@@ -323,11 +340,11 @@ controller_interface::return_type CartesianImpedanceController::update(
   }
   
   // Print error periodically (every ~100 updates to avoid spam)
-  static int counter = 0;
-  if (++counter % 100 == 0) {
-    RCLCPP_INFO(get_node()->get_logger(), "Position error: [%.4f, %.4f, %.4f], Orientation error: [%.4f, %.4f, %.4f]", 
-                error(0), error(1), error(2), error(3), error(4), error(5));
-  }
+  // static int counter = 0;
+  // if (++counter % 100 == 0) {
+  //   RCLCPP_INFO(get_node()->get_logger(), "Position error: [%.4f, %.4f, %.4f], Orientation error: [%.4f, %.4f, %.4f]", 
+  //               error(0), error(1), error(2), error(3), error(4), error(5));
+  // }
   // Compute Cartesian velocity
   Eigen::Matrix<double, 6, 1> velocity = jacobian * dq_filtered_;
 
@@ -406,6 +423,8 @@ CallbackReturn CartesianImpedanceController::on_init() {
     // Delta pose smoothing / safety
     auto_declare<double>("delta_pose_alpha", 0.3);
     auto_declare<double>("delta_pose_max_position_error", 0.3);
+    auto_declare<bool>("use_absolute_target_pose", true);
+    auto_declare<std::string>("target_pose_topic", "/target_pose_dmp");
 
     // Optional Cartesian error clipping (negative values disable clipping).
     auto_declare<double>("translational_clip_x", -1.0);
@@ -470,6 +489,8 @@ bool CartesianImpedanceController::assign_parameters() {
   delta_pose_alpha_ = get_node()->get_parameter("delta_pose_alpha").as_double();
   delta_pose_max_position_error_ =
       get_node()->get_parameter("delta_pose_max_position_error").as_double();
+  use_absolute_target_pose_ = get_node()->get_parameter("use_absolute_target_pose").as_bool();
+  target_pose_topic_ = get_node()->get_parameter("target_pose_topic").as_string();
 
   auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
   auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
@@ -596,9 +617,10 @@ CallbackReturn CartesianImpedanceController::on_configure(
 
   arm_id_ = robot_utils::getRobotNameFromDescription(robot_description_, get_node()->get_logger());
 
-  // Create delta_pose subscriber
-  delta_pose_sub_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/delta_pose", rclcpp::QoS(1).best_effort(),
+    // Create pose subscriber
+    const std::string pose_topic = use_absolute_target_pose_ ? target_pose_topic_ : "/delta_pose";
+    delta_pose_sub_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
+      pose_topic, rclcpp::QoS(1).best_effort(),
       std::bind(&CartesianImpedanceController::deltaPoseCallback, this, std::placeholders::_1));
 
     // Create gripper action clients + command subscriber
@@ -611,7 +633,8 @@ CallbackReturn CartesianImpedanceController::on_configure(
       std::bind(&CartesianImpedanceController::gripperCommandCallback, this, std::placeholders::_1));
 
   RCLCPP_INFO(get_node()->get_logger(),
-              "Cartesian Impedance Controller configured. Subscribing to /delta_pose");
+              "Cartesian Impedance Controller configured. Subscribing to %s (%s)",
+              pose_topic.c_str(), use_absolute_target_pose_ ? "absolute" : "delta");
 
   RCLCPP_INFO(get_node()->get_logger(),
               "Gripper control enabled: topic '%s' -> grasp '%s' (close) / move '%s' (open)",
